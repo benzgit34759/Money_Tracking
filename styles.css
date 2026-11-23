@@ -101,6 +101,18 @@ h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 20px 4px 8p
 .acard .arow { font-size: 13px; padding: 5px 0 2px; border-top: 1px solid hsl(var(--h) calc(var(--sat) * 40%) 50% / .18); margin-top: 4px; }
 .acard .arow:first-of-type { margin-top: 6px; }
 .acard .progress { height: 4px; margin-top: 3px; }
+.acard .bchk { display: block; width: 100%; margin: 8px 0 0; padding: 6px; min-height: 0; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  border-radius: 8px; border: 1px solid hsl(var(--h) calc(var(--sat) * 40%) 45% / .35); background: hsl(var(--h) calc(var(--sat) * 40%) 50% / .1); color: inherit; }
+.bc-app { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 12px; border-radius: 10px; background: var(--brand-soft); margin: 8px 0; }
+.bc-app b { font-size: 20px; }
+details.small { margin-bottom: 4px; } details.small .row { padding: 2px 0; }
+.bc-out { margin-top: 12px; }
+.bc-exp { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 10px 0 4px; }
+.bc-exp b { font-size: 22px; }
+.bc-ok, .bc-bad { padding: 10px 12px; border-radius: 10px; font-weight: 600; margin: 6px 0; }
+.bc-ok { background: hsl(140 60% 45% / .15); color: hsl(140 60% 30%); }
+.bc-bad { background: hsl(25 90% 50% / .14); color: var(--neg); }
+@media (prefers-color-scheme: dark) { .bc-ok { color: hsl(140 55% 65%); } }
 .acard .ab { font-size: 12px; opacity: .8; margin-top: 3px; }
 
 /* transaction rows */

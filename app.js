@@ -64,7 +64,7 @@ function download(name, text, type) {
 
 /* ================= constants ================= */
 /** Shown in Settings. Keep in step with CACHE ('moneyapp-v<N>') in sw.js so a phone can tell it got the update. */
-const APP_VERSION = 9;
+const APP_VERSION = 10;
 
 const T_OUT = 'Outgoing transfer';
 const T_IN = 'Incoming transfer';
@@ -469,6 +469,44 @@ function openModal(html, mount) {
   });
   mount && mount($('.sheet', m));
 }
+/** Check one bank group against reality: type the bank app's balance (and the cash counted, for a
+    group that also holds cash) and see the difference. Nothing is saved. */
+const CASH_RE = /เงินสด|cash|กระเป๋า|\+/i;
+function openBankCheck(bank) {
+  const bal = balances();
+  const g = bankTotals(bal).find((x) => x.bank === bank);
+  if (!g) return;
+  const withCash = CASH_RE.test(bank);
+  openModal(`
+    <h2>กระทบยอด ${esc(bank)}</h2>
+    <div class="bc-app"><span>ยอดในแอป (${g.accounts.length} บัญชี)</span><b class="num">฿${money(g.total)}</b></div>
+    <details class="small muted"><summary>ดูบัญชีในกลุ่มนี้</summary>
+      ${g.accounts.map((n) => `<div class="row"><span class="grow">${esc(n)}</span><span class="num">${money(bal[n] || 0)}</span></div>`).join('')}</details>
+    <label class="f"><span>ยอดในแอปธนาคาร</span><input id="bcBank" inputmode="decimal" placeholder="0.00" autocomplete="off"></label>
+    ${withCash ? `<label class="f"><span>เงินสดที่นับได้ (เว้นว่างไว้ แอปจะบอกว่าควรมีเท่าไร)</span><input id="bcCash" inputmode="decimal" placeholder="0.00" autocomplete="off"></label>` : ''}
+    <div id="bcOut" class="bc-out"></div>
+    <div class="btns"><button class="btn primary" data-act="close">เสร็จ</button></div>`, (m) => {
+    const out = $('#bcOut', m);
+    const num = (id) => { const el = $(id, m); return el && el.value.trim() ? evalAmount(el.value) : null; };
+    const verdict = (d) => Math.abs(d) < 0.005
+      ? `<div class="bc-ok">✅ ตรงกันพอดี</div>`
+      : `<div class="bc-bad">${d < 0 ? '⚠️ เงินจริงขาดไป' : '⚠️ เงินจริงเกินมา'} <b class="num">฿${money(Math.abs(d))}</b></div>
+         <div class="small muted">อาจลืมลงรายการ หรือลงยอดผิด ถ้าหาไม่เจอใช้ ตั้งค่า › ปรับยอดให้ตรงกับปัจจุบัน</div>`;
+    const update = () => {
+      delete $('#modal').dataset.dirty; // nothing here is worth keeping
+      const b = num('#bcBank'), c = num('#bcCash');
+      if (b === null || Number.isNaN(b) || Number.isNaN(c)) { out.innerHTML = ''; return; }
+      if (!withCash) { out.innerHTML = verdict(b - g.total); return; }
+      const expect = r2(g.total - b);
+      out.innerHTML = c === null
+        ? `<div class="bc-exp"><span>ควรมีเงินสดในกระเป๋า</span><b class="num ${expect < 0 ? 'neg' : ''}">฿${money(expect)}</b></div>
+           <div class="small muted">นับเงินในกระเป๋าแล้วกรอกช่องด้านบนเพื่อเช็ก</div>`
+        : `<div class="bc-exp"><span>ควรมีเงินสด ฿${money(expect)} · นับได้ ฿${money(c)}</span></div>${verdict(r2(b + c - g.total))}`;
+    };
+    m.addEventListener('input', update);
+    setTimeout(() => $('#bcBank', m).focus(), 50);
+  });
+}
 function closeModal() { const m = $('#modal'); m.hidden = true; m.innerHTML = ''; delete m.dataset.dirty; }
 
 /* ================= views ================= */
@@ -618,7 +656,7 @@ function renderHome(v) {
   const groupsHtml = groups.map((g) => `<div class="acard" style="${hueVars(g.hue)}" ${g.solo ? `data-goacc="${esc(g.name)}"` : ''}>
       <div class="ah">${esc(g.name)}${g.solo && g.accs[0].excludeTotal ? '<span class="badge">ไม่นับยอดรวม</span>' : ''}${g.solo ? '' : `<span>${g.accs.length} บัญชี</span>`}</div>
       <div class="av num ${g.total < 0 ? 'neg' : ''}">${money(g.total)}</div>
-      ${g.solo ? (g.accs[0].budget > 0 ? `${budgetBar(g.accs[0])}<div class="ab">ใช้ไป ${money0(spentAcc[g.name] || 0)} / งบ ${money0(g.accs[0].budget)}</div>` : '') : g.accs.map(accRow).join('')}
+      ${g.solo ? (g.accs[0].budget > 0 ? `${budgetBar(g.accs[0])}<div class="ab">ใช้ไป ${money0(spentAcc[g.name] || 0)} / งบ ${money0(g.accs[0].budget)}</div>` : '') : g.accs.map(accRow).join('') + `<button class="bchk" data-bankchk="${esc(g.name)}">✓ กระทบยอด</button>`}
     </div>`).join('');
 
   const recent = S.tx.filter((t) => t.category !== C_OPEN && t.category !== C_ADJ)
@@ -1119,7 +1157,7 @@ function openReconcile(mode) {
 
 /* ================= events ================= */
 document.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-act],[data-view],[data-tx],[data-goacc],[data-editacc],[data-setbudget],[data-editbudget],[data-anacc],[data-catsearch],[data-accsel],[data-gocat]');
+  const el = e.target.closest('[data-act],[data-view],[data-tx],[data-goacc],[data-editacc],[data-setbudget],[data-editbudget],[data-anacc],[data-catsearch],[data-accsel],[data-gocat],[data-bankchk]');
   if (e.target.id === 'modal') return closeModal();
   if (!el) return;
   const d = el.dataset;
@@ -1134,6 +1172,7 @@ document.addEventListener('click', async (e) => {
     if (v !== null) setBudget(a.name, evalAmount(v) || 0);
     return;
   }
+  if (d.bankchk) return openBankCheck(d.bankchk);
   if (d.accsel) return openAccPicker(d.accsel);
   if (d.gocat) return go('tx', { txCat: d.gocat, txSearch: '', txAcc: '', txMonth: curYM() });
   if (d.anacc) { await setSel('an', { mode: 'custom', names: [d.anacc] }); return go('an'); }
