@@ -1,0 +1,6 @@
+# Never commit financial data
+*.csv
+*.json
+!manifest.webmanifest
+Money Lover*
+MoneyApp-*
