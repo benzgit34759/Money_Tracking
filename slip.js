@@ -138,7 +138,7 @@ function renderSlipGroups() {
       <div class="slip-head">
         <select data-gf="account">${accOptions(g.account)}</select>
         <div class="seg"><button data-gmode="expense" class="${g.mode === 'expense' ? 'on' : ''}">รายจ่าย</button><button data-gmode="income" class="${g.mode === 'income' ? 'on' : ''}">รายรับ</button></div>
-        <select data-gf="category">${cats.map((c) => `<option ${c === g.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+        <select data-gf="category">${cats.map((c) => `<option value="${esc(c)}" ${c === g.category ? 'selected' : ''}>${esc(catLabel(c))}</option>`).join('')}</select>
       </div>
       <ul class="list slip-items">${g.items.map(itemHtml).join('')}</ul>
       <label class="btn primary slip-pick">+ เลือกภาพสลิป<input type="file" accept="image/*" multiple hidden data-gfiles></label>

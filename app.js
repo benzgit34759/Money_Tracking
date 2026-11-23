@@ -20,6 +20,13 @@ const addMonths = (ym, n) => {
 const addDays = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return isoDate(d); };
 const ymLabel = (ym) => { const [y, m] = ym.split('-'); return `${TH_M[+m - 1]} ${y.slice(2)}`; };
 const dateLabel = (d) => { const [y, m, dd] = d.split('-'); return `${+dd} ${TH_M[+m - 1]} ${y}`; };
+const TH_WD = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
+/** Day header: "วันนี้" / "เมื่อวาน" / "จ. 3 พ.ย. 2026". */
+const dayLabel = (d) => {
+  if (d === today()) return 'วันนี้';
+  if (d === addDays(today(), -1)) return 'เมื่อวาน';
+  return `${TH_WD[new Date(d + 'T00:00:00').getDay()]} ${dateLabel(d)}`;
+};
 const r2 = (n) => Math.round(n * 100) / 100;
 const money = (n) => r2(n).toLocaleString('th-TH', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const money0 = (n) => Math.round(n).toLocaleString('th-TH');
@@ -56,6 +63,9 @@ function download(name, text, type) {
 }
 
 /* ================= constants ================= */
+/** Shown in Settings. Keep in step with CACHE ('moneyapp-v<N>') in sw.js so a phone can tell it got the update. */
+const APP_VERSION = 9;
+
 const T_OUT = 'Outgoing transfer';
 const T_IN = 'Incoming transfer';
 const C_OPEN = 'ยอดยกมา';
@@ -64,6 +74,64 @@ const SPECIAL = new Set([T_OUT, T_IN, C_OPEN, C_ADJ]);
 const isTransfer = (t) => t.category === T_OUT || t.category === T_IN;
 /** Counts toward income/expense reports (same rule as Money Lover's "Exclude Report"). */
 const reportable = (t) => !t.exclude && !SPECIAL.has(t.category);
+
+/* ---------- category look: Thai label, emoji icon, colour hue ----------
+   Display only — the stored category name stays as-is (English, Money Lover compatible). */
+const CAT_DEFS = [
+  // names (| separated)                                   Thai label        icon  hue
+  ['Food & Beverage|Food|Restaurants|Cafe',               'อาหาร',           '🍜', 18],
+  ['Bills & Utilities',                                    'บิลและค่าน้ำไฟ',     '🧾', 40],
+  ['Electricity Bill',                                     'ค่าไฟ',            '⚡', 45],
+  ['Water Bill',                                           'ค่าน้ำ',            '💧', 200],
+  ['Internet Bill',                                        'ค่าเน็ต',           '🌐', 210],
+  ['Phone Bill',                                           'ค่าโทรศัพท์',        '📱', 220],
+  ['Gas Bill',                                             'ค่าแก๊ส',           '🔥', 25],
+  ['Television Bill',                                      'ค่าทีวี',            '📺', 230],
+  ['Rentals|Rent',                                         'ค่าเช่า',           '🏠', 255],
+  ['Transportation|Taxi|Parking Fees',                     'เดินทาง',          '🚌', 165],
+  ['Fuel Bill|Petrol|Fuel',                                'น้ำมัน',            '⛽', 0],
+  ['Shopping|Clothing|Footwear|Accessories|Electronics',   'ช้อปปิ้ง',          '🛍️', 330],
+  ['Personal Items',                                       'ของใช้ส่วนตัว',      '🧴', 300],
+  ['Entertainment|Movies|Games',                           'บันเทิง',           '🎬', 280],
+  ['Travel',                                               'ท่องเที่ยว',         '✈️', 190],
+  ['Friends & Lover',                                      'เพื่อนและคนรัก',     '💞', 340],
+  ['Medical|Pharmacy|Health & Fitness|Fitness',            'สุขภาพ',            '💊', 355],
+  ['Medication for Sale',                                  'ยาสำหรับขาย',       '📦', 150],
+  ['Gifts & Donations|Charity|Funeral|Marriage',           'ของขวัญ/บริจาค',    '🎁', 320],
+  ['Family|Children & Babies|Pets',                        'ครอบครัว',          '👪', 30],
+  ['Home Improvement|Home Services',                       'บ้าน',             '🛠️', 35],
+  ['Education|Books',                                      'การศึกษา',          '📚', 240],
+  ['Insurances',                                           'ประกัน',           '🛡️', 215],
+  ['Fees & Charges|Pay Interest',                          'ค่าธรรมเนียม',       '🏦', 60],
+  ['Investment|Business',                                  'ลงทุน',            '📈', 140],
+  ['Loan|Debt|Repayment|Withdrawal',                       'กู้/ชำระหนี้',        '💳', 260],
+  ['Other Expense|Others',                                 'รายจ่ายอื่นๆ',        '🏷️', 90],
+  ['Salary',                                               'เงินเดือน',          '💰', 120],
+  ['From Selling|Selling',                                 'รายได้จากการขาย',   '🏪', 130],
+  ['Collect Interest',                                     'ดอกเบี้ยรับ',         '🪙', 100],
+  ['Award|Gifts',                                          'รางวัล/ของขวัญ',    '🏆', 50],
+  ['Other Income',                                         'รายรับอื่นๆ',        '💵', 110],
+  [T_OUT + '|' + T_IN,                                     'โอนเงิน',          '⇄', -1],
+  [C_OPEN + '|' + C_ADJ,                                   '',                 '⚖️', -1],
+];
+const CAT_META = {};
+for (const [names, th, icon, hue] of CAT_DEFS) for (const n of names.split('|')) CAT_META[n] = { th: th || n, icon, hue };
+const hashHue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.codePointAt(0)) % 360; return h; };
+const catMeta = (name) => CAT_META[name] || { th: name, icon: (name || '?').trim().charAt(0).toUpperCase() || '🏷️', hue: hashHue(name) };
+const catLabel = (name) => catMeta(name).th;
+/** CSS vars for a colour hue; -1 = neutral grey. Consumed by .cic / .acard / .tcat in styles.css. */
+const hueVars = (h) => (h < 0 ? '--h:0;--sat:0' : `--h:${h};--sat:1`);
+/** Coloured round category icon. */
+const catIcon = (name, cls = '') => `<span class="cic ${cls}" style="${hueVars(catMeta(name).hue)}" aria-hidden="true">${esc(catMeta(name).icon)}</span>`;
+
+/* ---------- bank look: colour by well-known Thai bank names, else a stable hue ---------- */
+const BANK_HUES = [
+  [/กสิกร|kbank|kasikorn/i, 135], [/กรุงเทพ|bbl|bangkok bank/i, 215], [/ไทยพาณิชย์|scb/i, 275],
+  [/กรุงไทย|ktb/i, 195], [/กรุงศรี|krungsri|bay/i, 48], [/ทหารไทย|ttb|ธนชาต/i, 230],
+  [/ออมสิน|gsb/i, 330], [/ธ\.?ก\.?ส|baac/i, 160], [/uob|ยูโอบี/i, 225], [/cimb|ซีไอเอ็มบี/i, 355],
+  [/เงินสด|cash/i, -1], [/true ?money|ทรูมันนี่/i, 25],
+];
+const bankHue = (name) => { for (const [re, h] of BANK_HUES) if (re.test(name)) return h; return hashHue(name); };
 
 /* ================= IndexedDB ================= */
 const DB = {
@@ -125,6 +193,7 @@ const S = {
   txMonth: curYM(),
   txAcc: '',
   txSearch: '',
+  txCat: '',
   anMetric: 'expense',
   anRange: 12,
   anMonth: curYM(),
@@ -261,12 +330,16 @@ function categoryTypes() {
   return map;
 }
 function catsFor(type, account) {
-  const freq = {};
-  for (const t of S.tx) if (!account || t.account === account) freq[t.category] = (freq[t.category] || 0) + 1;
+  // most used in this account first, then most used overall, then by Thai label
+  const freq = {}, all = {};
+  for (const t of S.tx) {
+    all[t.category] = (all[t.category] || 0) + 1;
+    if (!account || t.account === account) freq[t.category] = (freq[t.category] || 0) + 1;
+  }
   return S.meta.categories
     .filter((c) => c.type === type && !SPECIAL.has(c.name))
     .map((c) => c.name)
-    .sort((a, b) => (freq[b] || 0) - (freq[a] || 0) || a.localeCompare(b));
+    .sort((a, b) => (freq[b] || 0) - (freq[a] || 0) || (all[b] || 0) - (all[a] || 0) || catLabel(a).localeCompare(catLabel(b), 'th'));
 }
 
 /* ================= CSV import / export ================= */
@@ -389,9 +462,14 @@ function openModal(html, mount) {
   const m = $('#modal');
   m.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
   m.hidden = false;
+  delete m.dataset.dirty;
+  // Remember that the user typed something, so the back button can ask before throwing it away.
+  $('.sheet', m).addEventListener('input', (e) => {
+    if (e.target.matches('input:not([type=checkbox]):not([type=radio]), textarea')) m.dataset.dirty = '1';
+  });
   mount && mount($('.sheet', m));
 }
-function closeModal() { const m = $('#modal'); m.hidden = true; m.innerHTML = ''; }
+function closeModal() { const m = $('#modal'); m.hidden = true; m.innerHTML = ''; delete m.dataset.dirty; }
 
 /* ================= views ================= */
 const TITLES = { home: 'ภาพรวม', tx: 'รายการ', an: 'วิเคราะห์รายจ่าย', set: 'ตั้งค่า', slip: 'แนบสลิป' };
@@ -405,11 +483,46 @@ function render() {
 }
 
 function go(view, opts = {}) {
+  if (view !== S.view) {
+    // Page history for the back button. Revisiting a page already in the history
+    // rewinds to it instead of growing the list (home → tx → an → tx: back goes home).
+    const i = NAV.stack.findIndex((x) => x.view === view);
+    if (i >= 0) NAV.stack.length = i;
+    else NAV.stack.push(navSnap());
+  }
   Object.assign(S, opts);
   S.view = view;
   render();
   window.scrollTo(0, 0);
 }
+
+/* ---------- back button (Android / browser) ----------
+   The app keeps one extra "guard" history entry. Pressing back consumes it (popstate);
+   we then handle the back ourselves and re-add the guard, so the app never leaves by accident.
+   Order: close an open dialog (ask first if something was typed) → previous page → home →
+   on home, a second press within 2 s exits. */
+const NAV = { stack: [], exitArmed: 0 };
+const navSnap = () => ({ view: S.view, txMonth: S.txMonth, txAcc: S.txAcc, txSearch: S.txSearch, txCat: S.txCat });
+const armBack = () => { if (!history.state?.guard) history.pushState({ guard: 1 }, ''); };
+
+window.addEventListener('popstate', () => {
+  const m = $('#modal');
+  if (!m.hidden) {
+    if (m.dataset.dirty && !confirm('ยังไม่ได้บันทึก ต้องการทิ้งข้อมูลที่กรอกไว้?')) return armBack();
+    closeModal();
+    return armBack();
+  }
+  if (NAV.stack.length || S.view !== 'home') {
+    Object.assign(S, NAV.stack.pop() || { view: 'home' });
+    render();
+    window.scrollTo(0, 0);
+    return armBack();
+  }
+  if (Date.now() - NAV.exitArmed < 2000) return history.back(); // second press: leave the app
+  NAV.exitArmed = Date.now();
+  toast('กด back อีกครั้งเพื่อออกจากแอป');
+  armBack();
+});
 
 function emptyView() {
   return `<div class="card empty">
@@ -425,10 +538,12 @@ function emptyView() {
 
 function txItem(t, showAccount = true) {
   const sub = [t.note, showAccount ? t.account : ''].filter(Boolean).join(' · ');
-  return `<li data-tx="${t.id}" class="row">
-    <div class="grow"><div class="title">${esc(t.category)}${t.exclude && !isTransfer(t) ? '<span class="badge">ไม่นับรายงาน</span>' : ''}</div>
+  const sys = SPECIAL.has(t.category); // transfers / opening balance / adjustments: shown faded
+  return `<li data-tx="${t.id}" class="row txi ${sys ? 'sys' : ''}">
+    ${catIcon(t.category)}
+    <div class="grow"><div class="title">${esc(catLabel(t.category))}${t.exclude && !sys ? '<span class="badge">ไม่นับรายงาน</span>' : ''}</div>
     <div class="sub">${esc(sub) || '&nbsp;'}</div></div>
-    <div class="amt ${t.amount < 0 ? 'neg' : 'pos'}">${signed(t.amount)}</div>
+    <div class="amt ${sys ? '' : t.amount < 0 ? 'neg' : 'pos'}">${signed(t.amount)}</div>
   </li>`;
 }
 
@@ -439,36 +554,93 @@ function renderHome(v) {
   const total = accs.filter((a) => !a.excludeTotal).reduce((s, a) => s + (bal[a.name] || 0), 0);
   const nEx = accs.filter((a) => a.excludeTotal).length;
   const ym = curYM();
-  const spent = {};
-  for (const t of S.tx) if (reportable(t) && t.amount < 0 && t.date.startsWith(ym)) spent[t.account] = (spent[t.account] || 0) - t.amount;
-  const banks = bankTotals(bal);
   const hSel = selAccounts('home');
-  const spentSel = Object.entries(spent).reduce((s, [n, x]) => s + (!hSel || hSel.has(n) ? x : 0), 0);
-  const recent = [...S.tx].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 8);
+  const inSel = (n) => !hSel || hSel.has(n);
+
+  // this month: income / expense / by category (for the selected accounts), spend per account (for budgets)
+  let inc = 0, exp = 0;
+  const spentAcc = {}, byCat = {};
+  for (const t of S.tx) {
+    if (!reportable(t) || !t.date.startsWith(ym)) continue;
+    if (t.amount < 0) spentAcc[t.account] = (spentAcc[t.account] || 0) - t.amount;
+    if (!inSel(t.account)) continue;
+    if (t.amount > 0) inc += t.amount;
+    else { exp -= t.amount; byCat[t.category] = (byCat[t.category] || 0) - t.amount; }
+  }
+  const net = inc - exp;
+
+  // budget ring: selected accounts that have a monthly budget
+  const budAccs = accs.filter((a) => a.budget > 0 && inSel(a.name));
+  const bud = budAccs.reduce((s, a) => s + a.budget, 0);
+  const budSpent = budAccs.reduce((s, a) => s + (spentAcc[a.name] || 0), 0);
+  const [yy, mm] = ym.split('-').map(Number);
+  const daysLeft = new Date(yy, mm, 0).getDate() - new Date().getDate();
+  let ring = '';
+  if (bud > 0) {
+    const p = budSpent / bud, C = 2 * Math.PI * 26;
+    const col = p > 1 ? 'var(--neg)' : p > 0.85 ? 'var(--warn)' : 'var(--brand)';
+    const left = bud - budSpent;
+    ring = `<div class="card budget-ring">
+      <svg width="68" height="68" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="26" fill="none" stroke="var(--line)" stroke-width="8"/>
+        <circle cx="32" cy="32" r="26" fill="none" stroke="${col}" stroke-width="8" stroke-linecap="round" stroke-dasharray="${(Math.min(p, 1) * C).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 32 32)"/>
+        <text x="32" y="37" text-anchor="middle">${Math.round(p * 100)}%</text></svg>
+      <div class="grow"><div class="title">งบเดือนนี้</div>
+        <div class="sub">ใช้ไป ${money0(budSpent)} จาก ${money0(bud)}</div>
+        <div class="sub" style="color:${left < 0 ? 'var(--neg)' : 'var(--pos)'}">${left < 0 ? `เกินงบ ${money0(-left)}` : `เหลือใช้ได้ ${money0(left)}`} · อีก ${daysLeft} วัน</div></div>
+    </div>`;
+  }
+
+  // top spending categories
+  const top = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const topMax = top[0]?.[1] || 1;
+  const topHtml = top.map(([c, x]) => `<div class="tcat" data-gocat="${esc(c)}" style="${hueVars(catMeta(c).hue)}">
+      ${catIcon(c)}<div class="grow"><div class="row"><span class="grow">${esc(catLabel(c))}</span><b class="num">${money0(x)}</b></div>
+      <div class="progress"><i style="width:${(x / topMax) * 100}%"></i></div></div></div>`).join('');
+
+  // accounts grouped by bank; an account with no bank is its own card
+  const bankTot = Object.fromEntries(bankTotals(bal).map((g) => [g.bank, g.total]));
+  const groups = [], gi = {};
+  for (const a of accs) {
+    const b = accBank(a);
+    if (b) { if (!gi[b]) groups.push((gi[b] = { name: b, hue: bankHue(b), total: bankTot[b] || 0, accs: [] })); gi[b].accs.push(a); }
+    else groups.push({ name: a.name, hue: bankHue(a.name), total: bal[a.name] || 0, accs: [a], solo: true });
+  }
+  const budgetBar = (a) => {
+    if (!(a.budget > 0)) return '';
+    const sp = spentAcc[a.name] || 0;
+    return `<div class="progress ${sp > a.budget ? 'over' : sp > a.budget * 0.85 ? 'near' : ''}"><i style="width:${Math.min(100, (sp / a.budget) * 100)}%"></i></div>`;
+  };
+  const accRow = (a) => {
+    const b = bal[a.name] || 0, prog = budgetBar(a);
+    return `<div class="arow" data-goacc="${esc(a.name)}"><div class="row"><span class="grow">${esc(a.name)}${a.excludeTotal ? '<span class="badge">ไม่นับยอดรวม</span>' : ''}</span>
+      <span class="num ${b < 0 ? 'neg' : ''}">${money(b)}</span></div>${prog}</div>`;
+  };
+  const groupsHtml = groups.map((g) => `<div class="acard" style="${hueVars(g.hue)}" ${g.solo ? `data-goacc="${esc(g.name)}"` : ''}>
+      <div class="ah">${esc(g.name)}${g.solo && g.accs[0].excludeTotal ? '<span class="badge">ไม่นับยอดรวม</span>' : ''}${g.solo ? '' : `<span>${g.accs.length} บัญชี</span>`}</div>
+      <div class="av num ${g.total < 0 ? 'neg' : ''}">${money(g.total)}</div>
+      ${g.solo ? (g.accs[0].budget > 0 ? `${budgetBar(g.accs[0])}<div class="ab">ใช้ไป ${money0(spentAcc[g.name] || 0)} / งบ ${money0(g.accs[0].budget)}</div>` : '') : g.accs.map(accRow).join('')}
+    </div>`).join('');
+
+  const recent = S.tx.filter((t) => t.category !== C_OPEN && t.category !== C_ADJ)
+    .sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 6);
 
   v.innerHTML = `
-    <div class="card hero">
-      <div class="muted small">${nEx ? `ยอดรวม (ไม่รวม ${nEx} บัญชี)` : 'ยอดรวมทุกบัญชี'}</div>
+    <div class="hero">
+      <div class="hk">${nEx ? `ยอดรวม (ไม่รวม ${nEx} บัญชี)` : 'ยอดรวมทุกบัญชี'}</div>
       <div class="big num">฿${money(total)}</div>
-      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:6px"><div class="muted small grow">รายจ่ายเดือนนี้ (${ymLabel(ym)}) <b>฿${money0(spentSel)}</b></div>${selButton('home')}</div>
+      <div class="h3c">
+        <div>รายรับ<b class="num">${money0(inc)}</b></div>
+        <div>รายจ่าย<b class="num">${money0(exp)}</b></div>
+        <div>คงเหลือ<b class="num">${net > 0 ? '+' : ''}${money0(net)}</b></div>
+      </div>
+      <div class="hsel"><span>${ymLabel(ym)}</span>${selButton('home')}</div>
     </div>
-    <button class="btn primary" style="width:100%;margin-top:10px" data-view="slip">📎 แนบสลิปหลายภาพ</button>
+    ${ring}
+    <button class="btn" style="width:100%;margin-top:10px" data-view="slip">📎 แนบสลิปหลายภาพ</button>
+    ${top.length ? `<h3><span>จ่ายมากสุดเดือนนี้</span><a data-view="an">ดูวิเคราะห์ ›</a></h3><div class="card pad">${topHtml}</div>` : ''}
     <h3>บัญชี</h3>
-    <ul class="card list">${accs.map((a) => {
-      const b = bal[a.name] || 0, sp = spent[a.name] || 0;
-      let prog = '';
-      if (a.budget > 0) {
-        const p = sp / a.budget;
-        prog = `<div class="progress ${p > 1 ? 'over' : p > 0.85 ? 'near' : ''}"><i style="width:${Math.min(100, p * 100)}%"></i></div>
-          <div class="sub">ใช้ไป ${money0(sp)} / งบ ${money0(a.budget)}</div>`;
-      } else if (sp) prog = `<div class="sub">ใช้ไปเดือนนี้ ${money0(sp)}</div>`;
-      return `<li data-goacc="${esc(a.name)}"><div class="row"><div class="grow title">${esc(a.name)}${a.excludeTotal ? '<span class="badge">ไม่นับยอดรวม</span>' : ''}</div>
-        <div class="amt ${b < 0 ? 'neg' : ''}">${money(b)}</div></div>${prog}</li>`;
-    }).join('')}</ul>
-    ${banks.length ? `<h3>ยอดตามธนาคาร</h3>
-    <ul class="card list">${banks.map((g) => `<li><div class="row"><div class="grow"><div class="title">${esc(g.bank)}</div>
-      <div class="sub">${g.accounts.map(esc).join(' + ')}</div></div><div class="amt ${g.total < 0 ? 'neg' : ''}">${money(g.total)}</div></div></li>`).join('')}</ul>` : ''}
-    <h3>รายการล่าสุด</h3>
+    <div class="agrid">${groupsHtml}</div>
+    <h3><span>รายการล่าสุด</span><a data-view="tx">ดูทั้งหมด ›</a></h3>
     <ul class="card list">${recent.map((t) => txItem(t)).join('') || '<li class="muted">ยังไม่มีรายการ</li>'}</ul>`;
 }
 
@@ -485,7 +657,12 @@ function renderTx(v) {
       <input id="txSearch" type="search" placeholder="ค้นหาโน้ต/หมวด (ทุกเดือน)" value="${esc(S.txSearch)}">
     </div>
     <div id="txSum"></div>
+    <div id="txChips" class="chips"></div>
     <div id="txList"></div>`;
+  $('#txChips').onclick = (e) => {
+    const c = e.target.closest('[data-chip]');
+    if (c) { S.txCat = c.dataset.chip; fillTxList(); }
+  };
   $('#txAcc').onchange = (e) => { S.txAcc = e.target.value; fillTxList(); };
   $('#txSearch').oninput = (e) => { S.txSearch = e.target.value; fillTxList(); };
   fillTxList();
@@ -494,8 +671,18 @@ function renderTx(v) {
 function fillTxList() {
   const q = S.txSearch.trim().toLowerCase();
   let list = S.tx.filter((t) => (!S.txAcc || t.account === S.txAcc) &&
-    (q ? `${t.note} ${t.category} ${t.account} ${t.amount}`.toLowerCase().includes(q) : t.date.startsWith(S.txMonth)));
+    (q ? `${t.note} ${t.category} ${catLabel(t.category)} ${t.account} ${t.amount}`.toLowerCase().includes(q) : t.date.startsWith(S.txMonth)));
   list.sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
+
+  // category chips: the most used categories in this list (+ the selected one)
+  const cnt = {};
+  for (const t of list) if (!SPECIAL.has(t.category)) cnt[t.category] = (cnt[t.category] || 0) + 1;
+  const chipCats = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]).slice(0, 10);
+  if (S.txCat && !chipCats.includes(S.txCat)) chipCats.unshift(S.txCat);
+  $('#txChips').innerHTML = chipCats.length < 2 && !S.txCat ? '' :
+    `<button class="chip ${S.txCat ? '' : 'on'}" data-chip="">ทั้งหมด</button>` +
+    chipCats.map((c) => `<button class="chip ${c === S.txCat ? 'on' : ''}" data-chip="${esc(c)}">${esc(catMeta(c).icon)} ${esc(catLabel(c))}</button>`).join('');
+  if (S.txCat) list = list.filter((t) => t.category === S.txCat);
   const inc = list.filter((t) => reportable(t) && t.amount > 0).reduce((s, t) => s + t.amount, 0);
   const exp = list.filter((t) => reportable(t) && t.amount < 0).reduce((s, t) => s - t.amount, 0);
   $('#txSum').innerHTML = `<div class="stats" style="margin-bottom:10px">
@@ -510,7 +697,7 @@ function fillTxList() {
       if (day) html += '</ul>';
       day = t.date;
       const dsum = shown.filter((x) => x.date === day && reportable(x)).reduce((s, x) => s + x.amount, 0);
-      html += `<div class="day-h"><span>${dateLabel(day)}</span><span class="num">${dsum ? signed(dsum) : ''}</span></div><ul class="list">`;
+      html += `<div class="day-h"><span>${dayLabel(day)}</span><span class="num">${dsum ? signed(dsum) : ''}</span></div><ul class="list">`;
     }
     html += txItem(t, !S.txAcc);
   }
@@ -543,11 +730,15 @@ function openForm(t) {
     <div class="seg" id="fMode">
       <button data-m="expense">รายจ่าย</button><button data-m="income">รายรับ</button><button data-m="transfer">โอน</button>
     </div>
-    <label class="f"><span>จำนวนเงิน (พิมพ์ 120+35 ได้)</span><input id="fAmt" class="amount-in" inputmode="decimal" autocomplete="off" value="${st.amount}"></label>
-    <label class="f"><span id="fAccL">บัญชี</span><select id="fAcc">${accOpts(st.account)}</select></label>
+    <label class="amt-box"><span>จำนวนเงิน (พิมพ์ 120+35 ได้)</span><input id="fAmt" class="amount-in" inputmode="decimal" autocomplete="off" placeholder="0" value="${st.amount}"></label>
+    <div class="chips center" id="fQuick">${[20, 50, 100, 500].map((n) => `<button type="button" class="chip" data-q="${n}">+${n}</button>`).join('')}</div>
+    <div id="fCatRow"><input type="hidden" id="fCat"><div class="cgrid" id="fCatGrid"></div></div>
+    <div id="fFreqRow"><div class="flabel">ใช้บ่อย</div><div class="chips" id="fFreq"></div></div>
+    <div class="two">
+      <label class="f"><span id="fAccL">บัญชี</span><select id="fAcc">${accOpts(st.account)}</select></label>
+      <label class="f"><span>วันที่</span><input id="fDate" type="date" value="${st.date}"></label>
+    </div>
     <label class="f" id="fToRow"><span>โอนไปบัญชี</span><select id="fTo"><option value="">— เลือก —</option>${accOpts(st.to)}</select></label>
-    <label class="f" id="fCatRow"><span>หมวด</span><select id="fCat"></select></label>
-    <label class="f"><span>วันที่</span><input id="fDate" type="date" value="${st.date}"></label>
     <label class="f" id="fNoteRow"><span>โน้ต (เช่น ชื่อร้าน)</span><input id="fNote" list="fNotes" autocomplete="off" value="${esc(st.note)}"><datalist id="fNotes"></datalist></label>
     <label class="check" id="fExRow"><input type="checkbox" id="fEx" ${st.exclude ? 'checked' : ''}> ไม่นับในรายงาน</label>
     <div class="btns">
@@ -555,11 +746,62 @@ function openForm(t) {
       <button class="btn" data-act="close">ยกเลิก</button>
       <button class="btn primary" id="fSave">บันทึก</button>
     </div>`, (m) => {
+    // Category picker: icon grid, most-used first; "more" reveals the rest.
+    const SHOW = 11;
     const fillCats = () => {
       const cats = catsFor(st.mode, $('#fAcc', m).value);
       if (st.category && !cats.includes(st.category)) cats.unshift(st.category);
-      $('#fCat', m).innerHTML = cats.map((c) => `<option ${c === st.category ? 'selected' : ''}>${esc(c)}</option>`).join('') + '<option value="__new">+ เพิ่มหมวดใหม่…</option>';
-      if (!st.category) st.category = $('#fCat', m).value;
+      if (!st.category) st.category = cats[0] || '';
+      let shown = st.allCats ? cats : cats.slice(0, SHOW);
+      if (st.category && !shown.includes(st.category)) shown = [st.category, ...shown.slice(0, SHOW - 1)];
+      const tile = (attr, icon, label, on = false) => `<button type="button" class="ctile ${on ? 'on' : ''}" ${attr}>${icon}<span>${label}</span></button>`;
+      $('#fCatGrid', m).innerHTML = shown.map((c) => tile(`data-cat="${esc(c)}"`, catIcon(c), esc(catLabel(c)), c === st.category)).join('')
+        + (cats.length > shown.length ? tile('data-catmore', '<span class="cic" style="--h:0;--sat:0">⋯</span>', 'เพิ่มเติม') : '')
+        + tile('data-catnew', '<span class="cic" style="--h:0;--sat:0">＋</span>', 'หมวดใหม่');
+      $('#fCat', m).value = st.category;
+    };
+    $('#fCatGrid', m).onclick = (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.hasAttribute('data-cat')) st.category = b.dataset.cat;
+      else if (b.hasAttribute('data-catmore')) st.allCats = true;
+      else if (b.hasAttribute('data-catnew')) {
+        const name = (prompt('ชื่อหมวดใหม่') || '').trim();
+        if (!name) return;
+        if (!S.meta.categories.some((c) => c.name === name)) setMeta('categories', [...S.meta.categories, { name, type: st.mode }]);
+        st.category = name;
+      }
+      fillCats();
+    };
+    // Quick amount buttons add to whatever is typed.
+    const setAmt = (val) => { const a = $('#fAmt', m); a.value = val; a.dispatchEvent(new Event('input', { bubbles: true })); };
+    $('#fQuick', m).onclick = (e) => {
+      const b = e.target.closest('[data-q]');
+      if (b) setAmt(String(r2((evalAmount($('#fAmt', m).value) || 0) + +b.dataset.q)));
+    };
+    // "Frequently used": same note + category + amount seen 2+ times in this account → one tap fills all three.
+    let freq = [];
+    const fillFreq = () => {
+      const acc = $('#fAcc', m).value, f = {};
+      if (!t && st.mode !== 'transfer') {
+        for (const x of S.tx) {
+          if (x.account !== acc || !x.note || !reportable(x) || (st.mode === 'expense' ? x.amount >= 0 : x.amount <= 0)) continue;
+          const k = JSON.stringify([x.note, x.category, Math.abs(x.amount)]);
+          f[k] = (f[k] || 0) + 1;
+        }
+      }
+      freq = Object.entries(f).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k]) => JSON.parse(k));
+      $('#fFreq', m).innerHTML = freq.map(([note, c, a], i) => `<button type="button" class="chip" data-fq="${i}">${esc(catMeta(c).icon)} ${esc(note)} ${money(a)}</button>`).join('');
+      $('#fFreqRow', m).classList.toggle('hidden', !freq.length);
+    };
+    $('#fFreq', m).onclick = (e) => {
+      const b = e.target.closest('[data-fq]');
+      if (!b) return;
+      const [note, c, a] = freq[+b.dataset.fq];
+      $('#fNote', m).value = note;
+      st.category = c;
+      fillCats();
+      setAmt(String(a));
     };
     const fillNotes = () => {
       const acc = $('#fAcc', m).value, freq = {};
@@ -575,18 +817,13 @@ function openForm(t) {
       $('#fNoteRow', m).classList.toggle('hidden', tr);
       $('#fExRow', m).classList.toggle('hidden', tr);
       $('#fAccL', m).textContent = tr ? 'จากบัญชี' : 'บัญชี';
+      $('#fAmt', m).classList.toggle('neg', mode === 'expense');
+      $('#fAmt', m).classList.toggle('pos', mode === 'income');
       if (!tr) { if (!catsFor(mode).includes(st.category) && !SPECIAL.has(st.category)) st.category = ''; fillCats(); }
+      fillFreq();
     };
     $$('#fMode button', m).forEach((b) => (b.onclick = () => setMode(b.dataset.m)));
-    $('#fAcc', m).onchange = () => { fillCats(); fillNotes(); };
-    $('#fCat', m).onchange = (e) => {
-      if (e.target.value === '__new') {
-        const name = (prompt('ชื่อหมวดใหม่') || '').trim();
-        if (name && !S.meta.categories.some((c) => c.name === name)) setMeta('categories', [...S.meta.categories, { name, type: st.mode }]);
-        st.category = name || st.category;
-        fillCats();
-      } else st.category = e.target.value;
-    };
+    $('#fAcc', m).onchange = () => { fillCats(); fillNotes(); fillFreq(); };
     // Suggest the usual category for a known note in this account.
     $('#fNote', m).onchange = (e) => {
       const note = e.target.value.trim(), acc = $('#fAcc', m).value, freq = {};
@@ -716,7 +953,7 @@ function renderAnalysis(v) {
       <tr><th>หมวด</th><th>${ymLabel(S.anMonth)}</th><th>เฉลี่ย 3 ด.</th><th>ต่าง</th></tr>
       ${cats.map((c) => {
         const s = catSel[c] || 0, av = cat3[c] || 0, d = s - av;
-        return `<tr class="clickable" data-catsearch="${esc(c)}"><td>${esc(c)}</td><td class="num">${money0(s)}</td><td class="num muted">${money0(av)}</td>
+        return `<tr class="clickable" data-catsearch="${esc(c)}"><td><span class="row" style="gap:8px">${catIcon(c, 'sm')}${esc(catLabel(c))}</span></td><td class="num">${money0(s)}</td><td class="num muted">${money0(av)}</td>
           <td class="num ${metric === 'expense' ? (d > 0 ? 'neg' : 'pos') : (d > 0 ? 'pos' : 'neg')}">${Math.round(d) ? signed(Math.round(d)) : '0'}</td></tr>`;
       }).join('') || '<tr><td colspan="4" class="muted">ไม่มีข้อมูล</td></tr>'}
     </table></div>
@@ -783,7 +1020,8 @@ function renderSettings(v) {
       <li data-act="restore"><div class="title">กู้คืนจาก Backup</div><div class="sub">แทนที่ข้อมูลทั้งหมดในแอปนี้</div></li>
       <li data-act="wipe" style="color:var(--neg)"><div class="title">ลบข้อมูลทั้งหมด</div></li>
     </ul>
-    <p class="muted small" style="margin:14px 4px">${S.tx.length.toLocaleString()} รายการ${dates.length ? ` · ${dateLabel(dates[0])} – ${dateLabel(dates[dates.length - 1])}` : ''} · <span id="persist"></span></p>`;
+    <p class="muted small" style="margin:14px 4px">${S.tx.length.toLocaleString()} รายการ${dates.length ? ` · ${dateLabel(dates[0])} – ${dateLabel(dates[dates.length - 1])}` : ''} · <span id="persist"></span></p>
+    <footer class="credit"><div>กระเป๋าเงิน · เวอร์ชัน ${APP_VERSION}</div><div>Designed by JPX</div></footer>`;
   if (navigator.storage?.persisted) navigator.storage.persisted().then((p) => { const el = $('#persist'); if (el) el.textContent = p ? 'พื้นที่เก็บข้อมูลถาวร ✓' : 'พื้นที่เก็บข้อมูลอาจถูกล้างได้ — โปรดสำรองข้อมูล'; });
 }
 
@@ -881,7 +1119,7 @@ function openReconcile(mode) {
 
 /* ================= events ================= */
 document.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-act],[data-view],[data-tx],[data-goacc],[data-editacc],[data-setbudget],[data-editbudget],[data-anacc],[data-catsearch],[data-accsel]');
+  const el = e.target.closest('[data-act],[data-view],[data-tx],[data-goacc],[data-editacc],[data-setbudget],[data-editbudget],[data-anacc],[data-catsearch],[data-accsel],[data-gocat]');
   if (e.target.id === 'modal') return closeModal();
   if (!el) return;
   const d = el.dataset;
@@ -897,6 +1135,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
   if (d.accsel) return openAccPicker(d.accsel);
+  if (d.gocat) return go('tx', { txCat: d.gocat, txSearch: '', txAcc: '', txMonth: curYM() });
   if (d.anacc) { await setSel('an', { mode: 'custom', names: [d.anacc] }); return go('an'); }
   if (d.catsearch) return go('tx', { txSearch: d.catsearch, txAcc: selSingle('an') });
   switch (d.act) {
@@ -973,6 +1212,7 @@ $('#fileJson').onchange = async (e) => {
     return;
   }
   render();
+  armBack();
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
 
