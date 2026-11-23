@@ -1,5 +1,5 @@
 // Service worker: caches the app shell so it opens with no network.
-const CACHE = 'moneyapp-v3';
+const CACHE = 'moneyapp-v6';
 // The OCR engine (vendor/tesseract, ~16 MB) is cached on first use by the fetch handler below.
 const ASSETS = [
   './',

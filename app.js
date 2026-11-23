@@ -125,7 +125,6 @@ const S = {
   txMonth: curYM(),
   txAcc: '',
   txSearch: '',
-  anAcc: '',
   anMetric: 'expense',
   anRange: 12,
   anMonth: curYM(),
@@ -143,6 +142,72 @@ const setMeta = (k, v) => { S.meta[k] = v; return DB.put('meta', { key: k, value
 const nextId = () => ++S.maxId;
 const activeAccounts = () => S.accounts.filter((a) => !a.archived);
 const accountByName = (n) => S.accounts.find((a) => a.name === n);
+const bankGuess = (name) => (name.includes('-') ? name.split('-').pop().trim() : '');
+/** Account's bank: the saved value, or (if never saved) guessed from the name suffix. '' = no bank. */
+const accBank = (a) => a.bank ?? bankGuess(a.name);
+const bankNames = () => [...new Set(S.accounts.map(accBank).filter(Boolean))].sort((x, y) => x.localeCompare(y, 'th'));
+/** [{ bank, total, accounts: [names] }] — every account with a bank (hidden and excluded ones too), for checking against the real bank. */
+function bankTotals(bal) {
+  const g = {};
+  for (const a of S.accounts) {
+    const b = accBank(a);
+    if (!b) continue;
+    const r = (g[b] ||= { bank: b, total: 0, accounts: [] });
+    r.total += bal[a.name] || 0;
+    r.accounts.push(a.name);
+  }
+  return Object.values(g).sort((x, y) => x.bank.localeCompare(y.bank, 'th'));
+}
+
+/* ---------- account filter for reports (home / analysis) ----------
+   Stored per screen in meta 'sel_<key>' as { mode: 'inc'|'exc'|'all'|'custom', names: [] }.
+   Default 'inc' = accounts counted in the total. */
+const SEL_LABEL = { all: 'ทุกบัญชี', inc: 'เฉพาะที่นับยอดรวม', exc: 'เฉพาะที่ไม่นับยอดรวม' };
+const getSel = (key) => S.meta['sel_' + key] || { mode: 'inc', names: [] };
+const setSel = (key, sel) => setMeta('sel_' + key, sel);
+/** Set of account names to include, or null for "no filter" (every transaction). */
+function selAccounts(key) {
+  const s = getSel(key);
+  if (s.mode === 'all') return null;
+  if (s.mode === 'custom') return new Set(s.names);
+  return new Set(S.accounts.filter((a) => (s.mode === 'exc') === !!a.excludeTotal).map((a) => a.name));
+}
+function selLabel(key) {
+  const s = getSel(key);
+  if (s.mode !== 'custom') return SEL_LABEL[s.mode];
+  return s.names.length === 1 ? s.names[0] : `เลือก ${s.names.length} บัญชี`;
+}
+/** The single selected account name, or '' when the filter covers zero or several accounts. */
+function selSingle(key) {
+  const set = selAccounts(key);
+  return set && set.size === 1 ? [...set][0] : '';
+}
+const selButton = (key) => `<button class="btn sm accsel" data-accsel="${key}">🏦 ${esc(selLabel(key))} ▾</button>`;
+
+function openAccPicker(key) {
+  const cur = selAccounts(key);
+  const checked = (n) => (!cur || cur.has(n) ? 'checked' : '');
+  const item = (a) => `<label class="check"><input type="checkbox" data-pick="${esc(a.name)}" ${checked(a.name)}> ${esc(a.name)}${a.archived ? ' <span class="badge">ซ่อน</span>' : ''}</label>`;
+  const inc = S.accounts.filter((a) => !a.excludeTotal), exc = S.accounts.filter((a) => a.excludeTotal);
+  openModal(`
+    <h2>เลือกบัญชีที่จะดู</h2>
+    <div class="btns" style="margin-top:6px">
+      <button class="btn sm" data-preset="inc">นับยอดรวม</button>
+      <button class="btn sm" data-preset="exc">ไม่นับยอดรวม</button>
+      <button class="btn sm" data-preset="all">ทั้งหมด</button>
+    </div>
+    <h3>บัญชีที่นับในยอดรวม (Include)</h3>${inc.map(item).join('') || '<p class="muted small">—</p>'}
+    <h3>บัญชีที่ไม่นับในยอดรวม (Exclude)</h3>${exc.map(item).join('') || '<p class="muted small">— ตั้งได้ที่ ตั้งค่า › บัญชี</p>'}
+    <div class="btns"><button class="btn" data-act="close">ยกเลิก</button><button class="btn primary" id="pkSave">ตกลง</button></div>`, (m) => {
+    $$('[data-preset]', m).forEach((b) => (b.onclick = async () => { await setSel(key, { mode: b.dataset.preset, names: [] }); closeModal(); render(); }));
+    $('#pkSave', m).onclick = async () => {
+      const names = $$('[data-pick]', m).filter((c) => c.checked).map((c) => c.dataset.pick);
+      if (!names.length) return toast('กรุณาเลือกอย่างน้อย 1 บัญชี');
+      await setSel(key, names.length === S.accounts.length ? { mode: 'all', names: [] } : { mode: 'custom', names });
+      closeModal(); render();
+    };
+  });
+}
 
 async function saveTx(add = [], removeIds = []) {
   if (removeIds.length) {
@@ -166,10 +231,10 @@ function balances() {
 }
 
 /** Map ym -> total (positive number) for 'expense' or 'income'. */
-function monthly(metric, acc) {
+function monthly(metric, accs) {
   const m = {};
   for (const t of S.tx) {
-    if (!reportable(t) || (acc && t.account !== acc)) continue;
+    if (!reportable(t) || (accs && !accs.has(t.account))) continue;
     if (metric === 'expense' ? t.amount >= 0 : t.amount <= 0) continue;
     const ym = t.date.slice(0, 7);
     m[ym] = (m[ym] || 0) + Math.abs(t.amount);
@@ -371,17 +436,21 @@ function txItem(t, showAccount = true) {
 function renderHome(v) {
   const bal = balances();
   const accs = activeAccounts();
-  const total = accs.reduce((s, a) => s + (bal[a.name] || 0), 0);
+  const total = accs.filter((a) => !a.excludeTotal).reduce((s, a) => s + (bal[a.name] || 0), 0);
+  const nEx = accs.filter((a) => a.excludeTotal).length;
   const ym = curYM();
   const spent = {};
   for (const t of S.tx) if (reportable(t) && t.amount < 0 && t.date.startsWith(ym)) spent[t.account] = (spent[t.account] || 0) - t.amount;
+  const banks = bankTotals(bal);
+  const hSel = selAccounts('home');
+  const spentSel = Object.entries(spent).reduce((s, [n, x]) => s + (!hSel || hSel.has(n) ? x : 0), 0);
   const recent = [...S.tx].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 8);
 
   v.innerHTML = `
     <div class="card hero">
-      <div class="muted small">ยอดรวมทุกบัญชี</div>
+      <div class="muted small">${nEx ? `ยอดรวม (ไม่รวม ${nEx} บัญชี)` : 'ยอดรวมทุกบัญชี'}</div>
       <div class="big num">฿${money(total)}</div>
-      <div class="muted small">รายจ่ายเดือนนี้ (${ymLabel(ym)}) ฿${money0(Object.values(spent).reduce((a, b) => a + b, 0))}</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:6px"><div class="muted small grow">รายจ่ายเดือนนี้ (${ymLabel(ym)}) <b>฿${money0(spentSel)}</b></div>${selButton('home')}</div>
     </div>
     <button class="btn primary" style="width:100%;margin-top:10px" data-view="slip">📎 แนบสลิปหลายภาพ</button>
     <h3>บัญชี</h3>
@@ -393,9 +462,12 @@ function renderHome(v) {
         prog = `<div class="progress ${p > 1 ? 'over' : p > 0.85 ? 'near' : ''}"><i style="width:${Math.min(100, p * 100)}%"></i></div>
           <div class="sub">ใช้ไป ${money0(sp)} / งบ ${money0(a.budget)}</div>`;
       } else if (sp) prog = `<div class="sub">ใช้ไปเดือนนี้ ${money0(sp)}</div>`;
-      return `<li data-goacc="${esc(a.name)}"><div class="row"><div class="grow title">${esc(a.name)}</div>
+      return `<li data-goacc="${esc(a.name)}"><div class="row"><div class="grow title">${esc(a.name)}${a.excludeTotal ? '<span class="badge">ไม่นับยอดรวม</span>' : ''}</div>
         <div class="amt ${b < 0 ? 'neg' : ''}">${money(b)}</div></div>${prog}</li>`;
     }).join('')}</ul>
+    ${banks.length ? `<h3>ยอดตามธนาคาร</h3>
+    <ul class="card list">${banks.map((g) => `<li><div class="row"><div class="grow"><div class="title">${esc(g.bank)}</div>
+      <div class="sub">${g.accounts.map(esc).join(' + ')}</div></div><div class="amt ${g.total < 0 ? 'neg' : ''}">${money(g.total)}</div></div></li>`).join('')}</ul>` : ''}
     <h3>รายการล่าสุด</h3>
     <ul class="card list">${recent.map((t) => txItem(t)).join('') || '<li class="muted">ยังไม่มีรายการ</li>'}</ul>`;
 }
@@ -596,8 +668,8 @@ function barChart(months, vals, { avg, budget, sel }) {
 }
 
 function renderAnalysis(v) {
-  const acc = S.anAcc, metric = S.anMetric, a = accountByName(acc);
-  const m = monthly(metric, acc);
+  const accs = selAccounts('an'), acc = selSingle('an'), metric = S.anMetric, a = accountByName(acc);
+  const m = monthly(metric, accs);
   const cur = curYM();
   const months = Array.from({ length: S.anRange }, (_, i) => addMonths(cur, i - S.anRange + 1));
   const vals = months.map((ym) => m[ym] || 0);
@@ -611,7 +683,7 @@ function renderAnalysis(v) {
   const catSel = {}, cat3 = {};
   const l3set = new Set(l3);
   for (const t of S.tx) {
-    if (!reportable(t) || (acc && t.account !== acc)) continue;
+    if (!reportable(t) || (accs && !accs.has(t.account))) continue;
     if (metric === 'expense' ? t.amount >= 0 : t.amount <= 0) continue;
     const ym = t.date.slice(0, 7), v2 = Math.abs(t.amount);
     if (ym === S.anMonth) catSel[t.category] = (catSel[t.category] || 0) + v2;
@@ -622,7 +694,7 @@ function renderAnalysis(v) {
 
   v.innerHTML = `
     <div class="toolbar">
-      <select id="anAcc"><option value="">ทุกบัญชี</option>${S.accounts.map((x) => `<option ${x.name === acc ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
+      ${selButton('an')}
       <div class="seg" style="flex:1 1 160px"><button data-metric="expense" class="${metric === 'expense' ? 'on' : ''}">รายจ่าย</button><button data-metric="income" class="${metric === 'income' ? 'on' : ''}">รายรับ</button></div>
       <div class="seg" style="flex:0 1 150px"><button data-range="6" class="${S.anRange === 6 ? 'on' : ''}">6 ด.</button><button data-range="12" class="${S.anRange === 12 ? 'on' : ''}">12 ด.</button><button data-range="24" class="${S.anRange === 24 ? 'on' : ''}">24 ด.</button></div>
     </div>
@@ -635,7 +707,7 @@ function renderAnalysis(v) {
       <div class="card stat hl"><div class="k">งบที่แนะนำ (จากเฉลี่ย 3 ด.)</div><div class="v">${money0(sugg)}</div>
         ${sugg && sugg !== budget ? `<button class="btn sm primary" style="margin-top:6px" data-setbudget="${esc(a.name)}" data-val="${sugg}">ตั้งเป็นงบ</button>` : ''}</div>` : ''}
     </div>
-    <h3>${word}รายเดือน${acc ? ' · ' + esc(acc) : ' · ทุกบัญชี'}</h3>
+    <h3>${word}รายเดือน · ${esc(selLabel('an'))}</h3>
     <div class="card" style="padding:10px 6px 0">${barChart(months, vals, { avg: avg3, budget, sel: S.anMonth })}
       <div class="legend"><span><i style="background:var(--warn)"></i>เฉลี่ย 3 เดือน</span>${budget ? '<span><i style="background:var(--neg)"></i>งบ</span>' : ''}<span>แตะแท่งเพื่อดูแยกหมวด</span></div>
     </div>
@@ -648,22 +720,21 @@ function renderAnalysis(v) {
           <td class="num ${metric === 'expense' ? (d > 0 ? 'neg' : 'pos') : (d > 0 ? 'pos' : 'neg')}">${Math.round(d) ? signed(Math.round(d)) : '0'}</td></tr>`;
       }).join('') || '<tr><td colspan="4" class="muted">ไม่มีข้อมูล</td></tr>'}
     </table></div>
-    ${metric === 'expense' ? budgetTable() : ''}`;
+    ${metric === 'expense' ? budgetTable(accs) : ''}`;
 
-  $('#anAcc').onchange = (e) => { S.anAcc = e.target.value; render(); };
   $$('[data-metric]', v).forEach((b) => (b.onclick = () => { S.anMetric = b.dataset.metric; render(); }));
   $$('[data-range]', v).forEach((b) => (b.onclick = () => { S.anRange = +b.dataset.range; render(); }));
   $$('svg [data-ym]', v).forEach((b) => (b.onclick = () => { S.anMonth = b.dataset.ym; render(); }));
 }
 
-function budgetTable() {
+function budgetTable(accs) {
   const by = expenseByAccount();
   const cur = curYM(), l3 = lastComplete(3), l6 = lastComplete(6);
-  const rows = activeAccounts().map((a) => {
+  const rows = activeAccounts().filter((a) => !accs || accs.has(a.name)).map((a) => {
     const m = by[a.name] || {};
     return { a, now: m[cur] || 0, avg3: avgOf(m, l3), avg6: avgOf(m, l6) };
   }).filter((r) => r.avg6 > 0 || r.a.budget > 0 || r.now > 0);
-  return `<h3>งบรายเดือนทุกบัญชี</h3>
+  return `<h3>งบรายเดือนแต่ละบัญชี</h3>
   <div class="card tbl-wrap"><table>
     <tr><th>บัญชี</th><th>เดือนนี้</th><th>เฉลี่ย 3 ด.</th><th>เฉลี่ย 6 ด.</th><th>งบ</th><th>แนะนำ</th></tr>
     ${rows.map(({ a, now, avg3, avg6 }) => {
@@ -695,7 +766,7 @@ function renderSettings(v) {
   v.innerHTML = `
     <h3>บัญชี / กระเป๋าเงิน</h3>
     <ul class="card list">
-      ${S.accounts.map((a) => `<li data-editacc="${a.id}" class="row"><div class="grow"><div class="title">${esc(a.name)}${a.archived ? '<span class="badge">ซ่อน</span>' : ''}</div>
+      ${S.accounts.map((a) => `<li data-editacc="${a.id}" class="row"><div class="grow"><div class="title">${esc(a.name)}${a.archived ? '<span class="badge">ซ่อน</span>' : ''}${a.excludeTotal ? '<span class="badge">ไม่นับยอดรวม</span>' : ''}</div>
         <div class="sub">งบ/เดือน: ${a.budget ? money0(a.budget) : '—'}</div></div><div class="amt ${bal[a.name] < 0 ? 'neg' : ''}">${money(bal[a.name] || 0)}</div></li>`).join('')}
       <li data-act="new-account" style="color:var(--brand);font-weight:500">+ เพิ่มบัญชี</li>
     </ul>
@@ -722,15 +793,24 @@ function openAccountForm(a) {
     <h2>${a ? 'แก้ไขบัญชี' : 'เพิ่มบัญชี'}</h2>
     <label class="f"><span>ชื่อบัญชี</span><input id="aName" value="${esc(a?.name || '')}"></label>
     ${a ? '' : '<label class="f"><span>ยอดเงินเริ่มต้น</span><input id="aBal" inputmode="decimal" value="0"></label>'}
+    <label class="f"><span>ธนาคาร (ไว้ดูยอดรวมต่อธนาคาร · เว้นว่างได้)</span><input id="aBank" list="aBanks" autocomplete="off" value="${esc(a ? accBank(a) : '')}">
+      <datalist id="aBanks">${bankNames().map((b) => `<option value="${esc(b)}">`).join('')}</datalist></label>
     <label class="f"><span>งบรายจ่ายต่อเดือน (0 = ไม่ตั้ง)</span><input id="aBud" inputmode="numeric" value="${a?.budget || 0}"></label>
+    <label class="check"><input type="checkbox" id="aExT" ${a?.excludeTotal ? 'checked' : ''}> ไม่นับบัญชีนี้ในยอดรวม (Exclude from Total)</label>
     ${a ? `<label class="check"><input type="checkbox" id="aArc" ${a.archived ? 'checked' : ''}> ซ่อนบัญชีนี้ (เลิกใช้)</label>
     <p class="muted small">ยอดคงเหลือปัจจุบัน: ${money(bal)} บาท</p>` : ''}
     <div class="btns"><button class="btn" data-act="close">ยกเลิก</button><button class="btn primary" id="aSave">บันทึก</button></div>`, (m) => {
+    // Suggest the bank from the name suffix ("บัญชีเที่ยว-กสิกร" -> "กสิกร") until the user edits the bank field.
+    let bankTouched = !!a?.bank;
+    $('#aBank', m).oninput = () => (bankTouched = true);
+    $('#aName', m).oninput = () => { if (!bankTouched) $('#aBank', m).value = bankGuess($('#aName', m).value); };
     $('#aSave', m).onclick = async () => {
       const name = $('#aName', m).value.trim();
       if (!name) return toast('กรุณาใส่ชื่อบัญชี');
       if (S.accounts.some((x) => x.name === name && x !== a)) return toast('มีบัญชีชื่อนี้แล้ว');
       const budget = Math.max(0, evalAmount($('#aBud', m).value) || 0);
+      const excludeTotal = $('#aExT', m).checked;
+      const bank = $('#aBank', m).value.trim();
       if (a) {
         if (name !== a.name) {
           const changed = S.tx.filter((t) => t.account === a.name);
@@ -738,10 +818,10 @@ function openAccountForm(a) {
           await DB.put('tx', changed);
           if (S.meta.lastAccount === a.name) setMeta('lastAccount', name);
         }
-        Object.assign(a, { name, budget, archived: $('#aArc', m).checked });
+        Object.assign(a, { name, budget, excludeTotal, bank, archived: $('#aArc', m).checked });
         await DB.put('accounts', a);
       } else {
-        const acc = { id: S.accounts.reduce((mx, x) => Math.max(mx, x.id), 0) + 1, name, budget, archived: false, order: S.accounts.length };
+        const acc = { id: S.accounts.reduce((mx, x) => Math.max(mx, x.id), 0) + 1, name, budget, excludeTotal, bank, archived: false, order: S.accounts.length };
         S.accounts.push(acc);
         await DB.put('accounts', acc);
         const b0 = evalAmount($('#aBal', m).value) || 0;
@@ -801,7 +881,7 @@ function openReconcile(mode) {
 
 /* ================= events ================= */
 document.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-act],[data-view],[data-tx],[data-goacc],[data-editacc],[data-setbudget],[data-editbudget],[data-anacc],[data-catsearch]');
+  const el = e.target.closest('[data-act],[data-view],[data-tx],[data-goacc],[data-editacc],[data-setbudget],[data-editbudget],[data-anacc],[data-catsearch],[data-accsel]');
   if (e.target.id === 'modal') return closeModal();
   if (!el) return;
   const d = el.dataset;
@@ -816,8 +896,9 @@ document.addEventListener('click', async (e) => {
     if (v !== null) setBudget(a.name, evalAmount(v) || 0);
     return;
   }
-  if (d.anacc) { S.anAcc = d.anacc; return go('an'); }
-  if (d.catsearch) return go('tx', { txSearch: d.catsearch, txAcc: S.anAcc });
+  if (d.accsel) return openAccPicker(d.accsel);
+  if (d.anacc) { await setSel('an', { mode: 'custom', names: [d.anacc] }); return go('an'); }
+  if (d.catsearch) return go('tx', { txSearch: d.catsearch, txAcc: selSingle('an') });
   switch (d.act) {
     case 'close': return closeModal();
     case 'add':

@@ -109,6 +109,7 @@ label.f > span { display: block; font-size: 13px; color: var(--muted); margin-bo
 .btn.danger { color: var(--neg); }
 .btn.sm { min-height: 32px; padding: 4px 10px; font-size: 13px; }
 .btn.icon { min-width: 42px; padding: 0; }
+.btn.accsel { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btns { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
 .btns .btn { flex: 1; }
 
