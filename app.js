@@ -64,7 +64,7 @@ function download(name, text, type) {
 
 /* ================= constants ================= */
 /** Shown in Settings. Keep in step with CACHE ('moneyapp-v<N>') in sw.js so a phone can tell it got the update. */
-const APP_VERSION = 10;
+const APP_VERSION = 11;
 
 const T_OUT = 'Outgoing transfer';
 const T_IN = 'Incoming transfer';
@@ -461,6 +461,9 @@ async function restoreBackup(text) {
 function openModal(html, mount) {
   const m = $('#modal');
   m.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
+  // One history entry per open dialog, so back closes it. A dialog replacing another reuses the entry.
+  const st = { d: NAV.stack.length, modal: 1 };
+  if (history.state?.modal) history.replaceState(st, ''); else history.pushState(st, '');
   m.hidden = false;
   delete m.dataset.dirty;
   // Remember that the user typed something, so the back button can ask before throwing it away.
@@ -507,7 +510,15 @@ function openBankCheck(bank) {
     setTimeout(() => $('#bcBank', m).focus(), 50);
   });
 }
-function closeModal() { const m = $('#modal'); m.hidden = true; m.innerHTML = ''; delete m.dataset.dirty; }
+function hideModal() { const m = $('#modal'); m.hidden = true; m.innerHTML = ''; delete m.dataset.dirty; }
+/** Close from the UI (button, save, tap outside): also drop the dialog's history entry, unless
+    another dialog opened straight after (it took over the entry). */
+function closeModal() {
+  hideModal();
+  setTimeout(() => {
+    if ($('#modal').hidden && history.state?.modal) { NAV.ignore++; history.back(); }
+  }, 0);
+}
 
 /* ================= views ================= */
 const TITLES = { home: 'ภาพรวม', tx: 'รายการ', an: 'วิเคราะห์รายจ่าย', set: 'ตั้งค่า', slip: 'แนบสลิป' };
@@ -521,12 +532,20 @@ function render() {
 }
 
 function go(view, opts = {}) {
-  if (view !== S.view) {
-    // Page history for the back button. Revisiting a page already in the history
-    // rewinds to it instead of growing the list (home → tx → an → tx: back goes home).
+  if (!$('#modal').hidden) hideModal();
+  const inModal = !!history.state?.modal; // leaving from a dialog: its history entry goes too
+  if (view === S.view) { if (inModal) { NAV.ignore++; history.back(); } }
+  else {
+    // Page history for the back button, kept in step with real browser history entries.
+    // Revisiting a page already in the history rewinds to it instead of growing the list
+    // (home → tx → an → tx: back goes home).
     const i = NAV.stack.findIndex((x) => x.view === view);
-    if (i >= 0) NAV.stack.length = i;
-    else NAV.stack.push(navSnap());
+    if (i >= 0) { const k = NAV.stack.length - i + inModal; NAV.stack.length = i; NAV.ignore++; history.go(-k); }
+    else {
+      NAV.stack.push(navSnap());
+      const st = { d: NAV.stack.length };
+      if (inModal) history.replaceState(st, ''); else history.pushState(st, '');
+    }
   }
   Object.assign(S, opts);
   S.view = view;
@@ -535,31 +554,31 @@ function go(view, opts = {}) {
 }
 
 /* ---------- back button (Android / browser) ----------
-   The app keeps one extra "guard" history entry. Pressing back consumes it (popstate);
-   we then handle the back ourselves and re-add the guard, so the app never leaves by accident.
-   Order: close an open dialog (ask first if something was typed) → previous page → home →
-   on home, a second press within 2 s exits. */
-const NAV = { stack: [], exitArmed: 0 };
+   Every page change and every dialog gets a real history entry, pushed while the user's tap is
+   being handled. (Chrome's back button skips entries a page adds without a tap, which is why an
+   extra "guard" entry added at start-up did not work: back closed the app.)
+   history.state = { d: depth in NAV.stack, modal?: 1 }. Back: close the dialog (ask first if something
+   was typed) → previous page → … → home → leave the app. */
+const NAV = { stack: [], ignore: 0 };
 const navSnap = () => ({ view: S.view, txMonth: S.txMonth, txAcc: S.txAcc, txSearch: S.txSearch, txCat: S.txCat });
-const armBack = () => { if (!history.state?.guard) history.pushState({ guard: 1 }, ''); };
 
-window.addEventListener('popstate', () => {
+window.addEventListener('popstate', (e) => {
+  if (NAV.ignore > 0) { NAV.ignore--; return; } // our own history.back()/go()
   const m = $('#modal');
   if (!m.hidden) {
-    if (m.dataset.dirty && !confirm('ยังไม่ได้บันทึก ต้องการทิ้งข้อมูลที่กรอกไว้?')) return armBack();
-    closeModal();
-    return armBack();
+    if (m.dataset.dirty && !confirm('ยังไม่ได้บันทึก ต้องการทิ้งข้อมูลที่กรอกไว้?')) {
+      history.pushState({ d: NAV.stack.length, modal: 1 }, '');
+      return;
+    }
+    return hideModal();
   }
-  if (NAV.stack.length || S.view !== 'home') {
-    Object.assign(S, NAV.stack.pop() || { view: 'home' });
+  const d = e.state?.d ?? 0;
+  if (d < NAV.stack.length) {
+    Object.assign(S, NAV.stack[d]);
+    NAV.stack.length = d;
     render();
     window.scrollTo(0, 0);
-    return armBack();
   }
-  if (Date.now() - NAV.exitArmed < 2000) return history.back(); // second press: leave the app
-  NAV.exitArmed = Date.now();
-  toast('กด back อีกครั้งเพื่อออกจากแอป');
-  armBack();
 });
 
 function emptyView() {
@@ -1244,14 +1263,16 @@ $('#fileJson').onchange = async (e) => {
 /* ================= boot ================= */
 (async function boot() {
   try {
+    // render() refers to renderSlip from slip.js, which loads after this file.
+    if (document.readyState === 'loading') await new Promise((r) => document.addEventListener('DOMContentLoaded', r, { once: true }));
     await DB.open();
     await loadState();
   } catch (err) {
     $('#view').innerHTML = `<div class="card pad">เปิดฐานข้อมูลไม่ได้: ${esc(err.message)}</div>`;
     return;
   }
+  history.replaceState({ d: 0 }, '');
   render();
-  armBack();
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
 
